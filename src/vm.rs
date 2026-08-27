@@ -9,6 +9,43 @@ pub enum ExecutionResult {
 
 type OpFn = fn(&mut Evm) -> ExecutionResult;
 
+macro_rules! impl_dup_swap_handlers {
+    (
+        dup: $( ($n:literal, $dup_fn:ident) ),+ ;
+        swap: $( ($sn:literal, $swap_fn:ident) ),+
+    ) => {
+        $(
+            fn $dup_fn(evm: &mut Evm) -> ExecutionResult {
+                let val = match evm.stack.peek($n) {
+                    Ok(v) => v,
+                    Err(e) => return ExecutionResult::Revert(e),
+                };
+                if evm.stack.push(val).is_err() {
+                    return ExecutionResult::Revert(concat!("Stack Overflow on DUP", stringify!($n)));
+                }
+                ExecutionResult::Halt
+            }
+        )+
+
+        $(
+            fn $swap_fn(evm: &mut Evm) -> ExecutionResult {
+                if let Err(e) = evm.stack.swap($sn) {
+                    return ExecutionResult::Revert(e);
+                }
+                ExecutionResult::Halt
+            }
+        )+
+    };
+}
+
+macro_rules! register_ops {
+    ($table:expr, $( $op:ident => $fn:ident ),+ $(,)?) => {
+        $(
+            $table[$op as usize] = Self::$fn;
+        )+
+    };
+}
+
 pub struct Evm<'a> {
     code: &'a [u8],
     pub pc: usize,
@@ -32,10 +69,10 @@ impl<'a> Evm<'a> {
         dispatch_table[MLOAD as usize] = Self::op_mload;
         dispatch_table[MSTORE as usize] = Self::op_mstore;
         dispatch_table[MSIZE as usize] = Self::op_msize;
-        dispatch_table[DUP1 as usize] = Self::op_dup1;
-        dispatch_table[DUP2 as usize] = Self::op_dup2;
-        dispatch_table[SWAP1 as usize] = Self::op_swap1;
-        dispatch_table[SWAP2 as usize] = Self::op_swap2;
+        //dispatch_table[DUP1 as usize] = Self::op_dup1;
+        //dispatch_table[DUP2 as usize] = Self::op_dup2;
+        //dispatch_table[SWAP1 as usize] = Self::op_swap1;
+        //dispatch_table[SWAP2 as usize] = Self::op_swap2;
         dispatch_table[LT as usize] = Self::op_lt;
         dispatch_table[GT as usize] = Self::op_gt;
         dispatch_table[EQ as usize] = Self::op_eq;
@@ -44,6 +81,19 @@ impl<'a> Evm<'a> {
         dispatch_table[OR as usize] = Self::op_or;
         dispatch_table[XOR as usize] = Self::op_xor;
         dispatch_table[NOT as usize] = Self::op_not;
+
+        register_ops!(
+            dispatch_table,
+            DUP1 => op_dup1,   DUP2 => op_dup2,   DUP3 => op_dup3,   DUP4 => op_dup4,
+            DUP5 => op_dup5,   DUP6 => op_dup6,   DUP7 => op_dup7,   DUP8 => op_dup8,
+            DUP9 => op_dup9,   DUP10 => op_dup10, DUP11 => op_dup11, DUP12 => op_dup12,
+            DUP13 => op_dup13, DUP14 => op_dup14, DUP15 => op_dup15, DUP16 => op_dup16,
+
+            SWAP1 => op_swap1,   SWAP2 => op_swap2,   SWAP3 => op_swap3,   SWAP4 => op_swap4,
+            SWAP5 => op_swap5,   SWAP6 => op_swap6,   SWAP7 => op_swap7,   SWAP8 => op_swap8,
+            SWAP9 => op_swap9,   SWAP10 => op_swap10, SWAP11 => op_swap11, SWAP12 => op_swap12,
+            SWAP13 => op_swap13, SWAP14 => op_swap14, SWAP15 => op_swap15, SWAP16 => op_swap16,
+        );
 
         Self {
             code,
@@ -186,7 +236,7 @@ impl<'a> Evm<'a> {
         }
         ExecutionResult::Halt
     }
-
+/*
     fn op_dup1(evm: &mut Evm) -> ExecutionResult {
         let val = match evm.stack.peek(1) {
             Ok(v) => v,
@@ -222,6 +272,7 @@ impl<'a> Evm<'a> {
         }
         ExecutionResult::Halt
     }
+    */
 
     fn op_lt(evm: &mut Evm) -> ExecutionResult {
         let (a, b) = match (evm.stack.pop(), evm.stack.pop()) {
@@ -315,4 +366,15 @@ impl<'a> Evm<'a> {
         ExecutionResult::Halt
     }
 
+    impl_dup_swap_handlers! {
+        dup: (1, op_dup1),   (2, op_dup2),   (3, op_dup3),   (4, op_dup4),
+             (5, op_dup5),   (6, op_dup6),   (7, op_dup7),   (8, op_dup8),
+             (9, op_dup9),   (10, op_dup10), (11, op_dup11), (12, op_dup12),
+             (13, op_dup13), (14, op_dup14), (15, op_dup15), (16, op_dup16);
+
+        swap: (1, op_swap1),   (2, op_swap2),   (3, op_swap3),   (4, op_swap4),
+              (5, op_swap5),   (6, op_swap6),   (7, op_swap7),   (8, op_swap8),
+              (9, op_swap9),   (10, op_swap10), (11, op_swap11), (12, op_swap12),
+              (13, op_swap13), (14, op_swap14), (15, op_swap15), (16, op_swap16)
+    }
 }
