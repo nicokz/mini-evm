@@ -276,4 +276,4 @@ When adding an opcode or protocol behavior, include a focused unit or integratio
 
 ## License
 
-No license file is currently included. Add an appropriate license before publishing this repository for reuse by others.
+No license file is currently included.
