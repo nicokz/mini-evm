@@ -50,6 +50,7 @@ pub const CALLDATACOPY: u8 = 0x37;
 pub const CODECOPY: u8 = 0x39;
 pub const ADDRESS: u8 = 0x30;
 pub const BALANCE: u8 = 0x31;
+pub const BLOCKHASH: u8 = 0x40;
 pub const CALLER: u8 = 0x33;
 pub const CALLVALUE: u8 = 0x34;
 pub const CODESIZE: u8 = 0x38;
@@ -81,6 +82,8 @@ pub const CREATE: u8 = 0xF0;
 pub const DELEGATECALL: u8 = 0xF4;
 pub const CREATE2: u8 = 0xF5;
 pub const STATICCALL: u8 = 0xFA;
+pub const INVALID: u8 = 0xFE;
+pub const SELFDESTRUCT: u8 = 0xFF;
 
 macro_rules! define_opcodes {
     ($($name:ident = $val:expr);* $(;)?) => {

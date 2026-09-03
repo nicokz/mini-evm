@@ -1,4 +1,5 @@
 use ruint::aliases::U256;
+use std::collections::HashMap;
 
 pub type Address = [u8; 20];
 pub type BlockHashFn = fn(u64) -> U256;
@@ -21,6 +22,7 @@ pub struct Environment {
     pub base_fee: U256,
     pub blob_base_fee: U256,
     pub block_hash: BlockHashFn,
+    pub block_hashes: HashMap<u64, U256>,
 }
 
 impl Default for Environment {
@@ -37,6 +39,7 @@ impl Default for Environment {
             base_fee: U256::ZERO,
             blob_base_fee: U256::ZERO,
             block_hash: default_block_hash,
+            block_hashes: HashMap::new(),
         }
     }
 }

@@ -85,6 +85,7 @@ fn build_gas_table() -> [u64; 256] {
     table[SAR as usize] = 3;
     table[ADDRESS as usize] = 2;
     table[BALANCE as usize] = 0;
+    table[BLOCKHASH as usize] = 20;
     table[SELFBALANCE as usize] = 5;
     table[CALLER as usize] = 2;
     table[CALLVALUE as usize] = 2;
@@ -112,6 +113,8 @@ fn build_gas_table() -> [u64; 256] {
     table[DELEGATECALL as usize] = 0;
     table[CREATE2 as usize] = 0;
     table[STATICCALL as usize] = 0;
+    table[INVALID as usize] = 0;
+    table[SELFDESTRUCT as usize] = 0;
     table[MLOAD as usize] = 3;
     table[MSTORE as usize] = 3;
     table[MSTORE8 as usize] = 3;
@@ -255,7 +258,7 @@ macro_rules! impl_log_n {
     ($(($name:ident, $topics:literal)),+ $(,)?) => {
         $(
             fn $name(evm: &mut Evm) -> ExecutionResult {
-                Evm::execute_log_n(evm, $topics)
+                Evm::op_log(evm, $topics)
             }
         )+
     };
@@ -283,6 +286,7 @@ pub struct Evm {
     pub gas_left: u64,
     pub tracer: Option<StepTracer>,
     pub state: StateFork,
+    pub created_in_transaction: HashSet<Address>,
     dispatch_table: [OpFn; 256],
     gas_table: [u64; 256],
 }
@@ -379,6 +383,7 @@ impl Evm {
 
         dispatch_table[ADDRESS as usize] = Self::op_address;
         dispatch_table[BALANCE as usize] = Self::op_balance;
+        dispatch_table[BLOCKHASH as usize] = Self::op_blockhash;
         dispatch_table[CALLER as usize] = Self::op_caller;
         dispatch_table[CALLVALUE as usize] = Self::op_callvalue;
         dispatch_table[CODESIZE as usize] = Self::op_codesize;
@@ -410,6 +415,8 @@ impl Evm {
         dispatch_table[DELEGATECALL as usize] = Self::op_delegatecall;
         dispatch_table[CREATE2 as usize] = Self::op_create2;
         dispatch_table[STATICCALL as usize] = Self::op_staticcall;
+        dispatch_table[INVALID as usize] = Self::op_invalid_opcode;
+        dispatch_table[SELFDESTRUCT as usize] = Self::op_selfdestruct;
 
         register_ops!(
             dispatch_table,
@@ -446,6 +453,7 @@ impl Evm {
             gas_left: gas_limit,
             tracer: None,
             state: StateFork::default(),
+            created_in_transaction: HashSet::new(),
             dispatch_table,
             gas_table: build_gas_table(),
         }
@@ -781,6 +789,11 @@ impl Evm {
 
     fn op_invalid(_evm: &mut Evm) -> ExecutionResult {
         ExecutionResult::Error("Invalid Opcode")
+    }
+
+    fn op_invalid_opcode(evm: &mut Evm) -> ExecutionResult {
+        evm.gas_left = 0;
+        ExecutionResult::InvalidOpcode(INVALID)
     }
 
     fn op_stop(_evm: &mut Evm) -> ExecutionResult {
@@ -1594,6 +1607,39 @@ impl Evm {
         )
     }
 
+    fn op_blockhash(evm: &mut Evm) -> ExecutionResult {
+        let requested = match evm.stack.pop() {
+            Ok(value) => value,
+            Err(error) => return ExecutionResult::Error(error),
+        };
+        let current = match u64::try_from(evm.env.number) {
+            Ok(value) => value,
+            Err(_) => return Self::push_u256(evm, U256::ZERO, "BLOCKHASH"),
+        };
+        let hash = u64::try_from(requested)
+            .ok()
+            .filter(|number| *number < current && current - *number <= 256)
+            .and_then(|number| {
+                evm.env
+                    .block_hashes
+                    .get(&number)
+                    .copied()
+                    .or_else(|| Some((evm.env.block_hash)(number)))
+            })
+            .unwrap_or(U256::ZERO);
+        Self::push_u256(evm, hash, "BLOCKHASH")
+    }
+
+    fn push_u256(evm: &mut Evm, value: U256, opcode: &str) -> ExecutionResult {
+        evm.stack.push(value).map_or_else(
+            |_| ExecutionResult::Error("Stack Overflow on block context opcode"),
+            |_| {
+                let _ = opcode;
+                ExecutionResult::Halt
+            },
+        )
+    }
+
     fn op_extcodesize(evm: &mut Evm) -> ExecutionResult {
         let address = match evm.stack.pop() {
             Ok(word) => Self::account_address(word),
@@ -1945,10 +1991,13 @@ impl Evm {
         child.balances = self.balances.clone();
         child.nonces = self.nonces.clone();
         child.contracts = self.contracts.clone();
+        child.created_in_transaction = self.created_in_transaction.clone();
         child.is_static = false;
 
         let result = child.run_child();
         self.gas_left = self.gas_left.saturating_add(child.gas_left);
+        self.created_in_transaction
+            .extend(child.created_in_transaction.iter().copied());
         let runtime_code = match result {
             ExecutionResult::Return(code) => {
                 child.return_data = code.clone();
@@ -1993,6 +2042,7 @@ impl Evm {
         }
         self.gas_left -= deposit;
         self.contracts.insert(new_addr, runtime_code);
+        self.created_in_transaction.insert(new_addr);
         self.state = child.state;
         self.state
             .set_code(new_addr, self.contracts[&new_addr].clone());
@@ -2014,6 +2064,50 @@ impl Evm {
 
     fn op_staticcall(evm: &mut Evm) -> ExecutionResult {
         Self::execute_call(evm, true, false)
+    }
+
+    fn op_selfdestruct(evm: &mut Evm) -> ExecutionResult {
+        if evm.is_static {
+            return ExecutionResult::VmError(VmError::StaticCallViolation);
+        }
+        let beneficiary = match evm.stack.pop() {
+            Ok(value) => Self::account_address(value),
+            Err(error) => return ExecutionResult::Error(error),
+        };
+        let access_cost: u64 = if evm.accessed_addresses.insert(beneficiary) {
+            2_600
+        } else {
+            100
+        };
+        let cost = 5_000 + access_cost;
+        if evm.gas_left < cost {
+            return ExecutionResult::OutOfGas;
+        }
+        evm.gas_left -= cost;
+
+        let account = if evm.storage_address == [0; 20] {
+            evm.context.address
+        } else {
+            evm.storage_address
+        };
+        let balance = evm.state.get_balance(&account);
+        if account != beneficiary {
+            let beneficiary_balance = evm.state.get_balance(&beneficiary);
+            evm.state
+                .set_balance(beneficiary, beneficiary_balance + balance);
+            evm.state.set_balance(account, U256::ZERO);
+        }
+        if evm.created_in_transaction.contains(&account) {
+            evm.state.dirty_state.remove(&account);
+            evm.state.base_state.remove(&account);
+            evm.contracts.remove(&account);
+            evm.balances.remove(&account);
+            evm.nonces.remove(&account);
+            if evm.storage_address == account {
+                evm.storage.clear();
+            }
+        }
+        ExecutionResult::Halt
     }
 
     fn execute_call(evm: &mut Evm, force_static: bool, delegate: bool) -> ExecutionResult {
@@ -2169,6 +2263,7 @@ impl Evm {
         child.state = evm.state.clone();
         child.storage = evm.storage.clone();
         child.contracts = evm.contracts.clone();
+        child.created_in_transaction = evm.created_in_transaction.clone();
         child.is_static = frame.is_static;
 
         let result = child.run_child();
@@ -2183,6 +2278,7 @@ impl Evm {
         if success {
             evm.state = child.state;
             evm.storage = child.storage;
+            evm.created_in_transaction = child.created_in_transaction;
             evm.logs.extend(child.logs);
         } else {
             evm.state.revert_to_snapshot(snapshot);
@@ -2203,7 +2299,7 @@ impl Evm {
         ExecutionResult::Halt
     }
 
-    fn execute_log_n(evm: &mut Evm, topic_count: usize) -> ExecutionResult {
+    fn op_log(evm: &mut Evm, topic_count: usize) -> ExecutionResult {
         if evm.is_static {
             return ExecutionResult::VmError(VmError::StaticCallViolation);
         }
