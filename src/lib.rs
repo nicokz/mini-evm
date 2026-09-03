@@ -2,6 +2,7 @@ pub mod call_frame;
 pub mod crypto;
 pub mod disasm;
 pub mod env;
+pub mod fuzzer;
 pub mod gas;
 pub mod log;
 pub mod mempool;

@@ -64,6 +64,7 @@ pub fn opcode_mnemonic(opcode: u8) -> &'static str {
         JUMP => "JUMP",
         JUMPI => "JUMPI",
         MSIZE => "MSIZE",
+        MCOPY => "MCOPY",
         GAS => "GAS",
         JUMPDEST => "JUMPDEST",
         CREATE => "CREATE",

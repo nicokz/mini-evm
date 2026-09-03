@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 pub type TestFixture = HashMap<String, StateTestCase>;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -21,6 +22,9 @@ pub struct StateTestCase {
 pub struct Env {
     #[serde(deserialize_with = "deserialize_address")]
     pub current_coinbase: Address,
+    #[allow(dead_code)]
+    #[serde(deserialize_with = "deserialize_u256")]
+    pub current_difficulty: U256,
     #[serde(deserialize_with = "deserialize_u256")]
     pub current_gas_limit: U256,
     #[serde(deserialize_with = "deserialize_u256")]
@@ -31,6 +35,8 @@ pub struct Env {
     pub current_base_fee: Option<U256>,
     #[serde(default, deserialize_with = "deserialize_u256_opt")]
     pub current_random: Option<U256>,
+    #[serde(default, deserialize_with = "deserialize_u256_opt")]
+    pub current_excess_blob_gas: Option<U256>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,11 +64,24 @@ pub struct TxFixture {
     pub gas_price: Vec<U256>,
     #[serde(deserialize_with = "deserialize_u256_vec")]
     pub value: Vec<U256>,
+    #[allow(dead_code)]
+    #[serde(deserialize_with = "deserialize_u256")]
+    pub nonce: U256,
     #[serde(default, deserialize_with = "deserialize_address_opt")]
     pub to: Option<Address>,
     #[serde(default, deserialize_with = "deserialize_address_opt")]
     pub sender: Option<Address>,
     pub secret_key: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bytes_vec_opt")]
+    pub blob_versioned_hashes: Option<Vec<Vec<u8>>>,
+    #[serde(default, deserialize_with = "deserialize_u256_vec_opt")]
+    pub max_fee_per_blob_gas: Option<Vec<U256>>,
+    #[allow(dead_code)]
+    #[serde(default, deserialize_with = "deserialize_u256_vec_opt")]
+    pub max_fee_per_gas: Option<Vec<U256>>,
+    #[allow(dead_code)]
+    #[serde(default, deserialize_with = "deserialize_u256_vec_opt")]
+    pub max_priority_fee_per_gas: Option<Vec<U256>>,
 }
 
 #[allow(dead_code)]
@@ -170,6 +189,31 @@ where
         .iter()
         .map(parse_u256)
         .collect::<Result<_, _>>()
+        .map_err(serde::de::Error::custom)
+}
+
+fn deserialize_u256_vec_opt<'de, D>(deserializer: D) -> Result<Option<Vec<U256>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Vec<Value>>::deserialize(deserializer)?
+        .map(|values| values.iter().map(parse_u256).collect::<Result<_, _>>())
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
+fn deserialize_bytes_vec_opt<'de, D>(deserializer: D) -> Result<Option<Vec<Vec<u8>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Vec<Value>>::deserialize(deserializer)?
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| hex_bytes(string(value)?))
+                .collect::<Result<_, _>>()
+        })
+        .transpose()
         .map_err(serde::de::Error::custom)
 }
 

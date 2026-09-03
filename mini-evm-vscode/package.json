@@ -1,0 +1,63 @@
+{
+  "name": "mini-evm-vscode",
+  "displayName": "mini-evm Copilot Agent",
+  "description": "VS Code Copilot Chat integration for mini-evm daemon",
+  "version": "0.1.0",
+  "publisher": "mini-evm",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mini-evm/mini-evm"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onChatParticipant:mini-evm.agent"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "mini-evm",
+      "properties": {
+        "miniEvm.rpcUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8545/v1/fuzz",
+          "description": "Fuzz endpoint for the mini-evm daemon"
+        }
+      }
+    },
+    "chatParticipants": [
+      {
+        "id": "mini-evm.agent",
+        "name": "evm",
+        "fullName": "mini-evm Engine",
+        "description": "RPi5 4-core parallel EVM state fuzzer",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "fuzz",
+            "description": "Execute state mutation fuzzing on bytecode"
+          },
+          {
+            "name": "trace",
+            "description": "Trace opcode execution and inspect storage diff"
+          }
+        ]
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,6 +1,7 @@
 // src/vm/runner.rs
 
 use crate::env::Address;
+use crate::log::LogRecord;
 use crate::state::StateFork;
 use crate::tx::decoder::SignedTransaction;
 use crate::vm::{Evm, ExecutionResult};
@@ -12,7 +13,7 @@ pub struct TxExecutionReceipt {
     pub tx_hash: H256,
     pub status: u64, // 1 = success, 0 = revert
     pub gas_used: u64,
-    pub logs: Vec<u8>,
+    pub logs: Vec<LogRecord>,
 }
 
 #[derive(Debug)]
@@ -81,10 +82,11 @@ pub fn apply_signed_transaction(
     let post_exec_balance = state.get_balance(&sender);
     state.set_balance(sender, post_exec_balance + refund_amount);
 
+    let logs = if status == 1 { vm.logs } else { Vec::new() };
     Ok(TxExecutionReceipt {
         tx_hash: tx.hash,
         status,
         gas_used,
-        logs: vec![],
+        logs,
     })
 }

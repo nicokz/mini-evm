@@ -122,6 +122,7 @@ fn build_gas_table() -> [u64; 256] {
     table[PUSH2 as usize] = 3;
     table[PUSH3 as usize..=PUSH32 as usize].fill(3);
     table[MSIZE as usize] = 2;
+    table[MCOPY as usize] = 0;
     table[JUMPDEST as usize] = 1;
 
     table[JUMP as usize] = 8;
@@ -405,6 +406,7 @@ impl Evm {
         dispatch_table[BLOBHASH as usize] = Self::op_blobhash;
         dispatch_table[BLOBBASEFEE as usize] = Self::op_blobbasefee;
         dispatch_table[GAS as usize] = Self::op_gas;
+        dispatch_table[MCOPY as usize] = Self::op_mcopy;
         dispatch_table[LOG0 as usize] = Self::op_log0;
         dispatch_table[LOG1 as usize] = Self::op_log1;
         dispatch_table[LOG2 as usize] = Self::op_log2;
@@ -1101,6 +1103,62 @@ impl Evm {
         if evm.stack.push(U256::from(size)).is_err() {
             return ExecutionResult::Error("Stack Overflow on MSIZE");
         }
+        ExecutionResult::Halt
+    }
+
+    fn op_mcopy(evm: &mut Evm) -> ExecutionResult {
+        let (dest_word, source_word, size_word) =
+            match (evm.stack.pop(), evm.stack.pop(), evm.stack.pop()) {
+                (Ok(dest), Ok(source), Ok(size)) => (dest, source, size),
+                _ => return ExecutionResult::Error("Stack Underflow on MCOPY"),
+            };
+        let size = match usize::try_from(size_word) {
+            Ok(value) => value,
+            Err(_) => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        let copy_cost = match calc_copy_gas(size_word) {
+            Ok(cost) => cost,
+            Err(error) => return ExecutionResult::VmError(error),
+        };
+        if size == 0 {
+            let total_cost = 3u64.checked_add(copy_cost).ok_or(VmError::Overflow);
+            let total_cost = match total_cost {
+                Ok(cost) => cost,
+                Err(error) => return ExecutionResult::VmError(error),
+            };
+            if evm.gas_left < total_cost {
+                return ExecutionResult::OutOfGas;
+            }
+            evm.gas_left -= total_cost;
+            return ExecutionResult::Halt;
+        }
+        let dest = match usize::try_from(dest_word) {
+            Ok(value) => value,
+            Err(_) => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        let source = match usize::try_from(source_word) {
+            Ok(value) => value,
+            Err(_) => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        let memory_cost = match evm.memory_expansion_cost(&[(dest, size), (source, size)]) {
+            Ok(cost) => cost,
+            Err(error) => return ExecutionResult::VmError(error),
+        };
+        let total_cost = match 3u64
+            .checked_add(copy_cost)
+            .and_then(|cost| cost.checked_add(memory_cost))
+        {
+            Some(cost) => cost,
+            None => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        if evm.gas_left < total_cost {
+            return ExecutionResult::OutOfGas;
+        }
+        evm.gas_left -= total_cost;
+        if let Err(error) = evm.expand_memory_without_charge(&[(dest, size), (source, size)]) {
+            return ExecutionResult::VmError(error);
+        }
+        evm.memory.copy_within(source..source + size, dest);
         ExecutionResult::Halt
     }
 

@@ -120,6 +120,12 @@ pub async fn handle_eth_send_raw_transaction(
         .tx_pool
         .insert(sender, transaction.clone(), bytes)
         .map_err(|error| JsonRpcError::custom(-32000, error))?;
+    let _ = state
+        .events
+        .send(crate::rpc::types::EvmEvent::PendingTx(format!(
+            "0x{}",
+            hex::encode(transaction.hash)
+        )));
     if state.is_auto_mine() {
         state
             .mine_block()

@@ -31,7 +31,33 @@ fn pre_existing_selfdestruct_transfers_balance_and_preserves_state() {
         },
     );
 
-    let mut vm = Evm::new_with_gas(&[PUSH20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, SELFDESTRUCT], 20_000);
+    let mut vm = Evm::new_with_gas(
+        &[
+            PUSH20,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SELFDESTRUCT,
+        ],
+        20_000,
+    );
     vm.code.clear();
     push_address(&mut vm.code, beneficiary);
     vm.code.push(SELFDESTRUCT);
@@ -41,8 +67,14 @@ fn pre_existing_selfdestruct_transfers_balance_and_preserves_state() {
     assert_eq!(vm.run(), ExecutionResult::Halt);
     assert_eq!(vm.state.get_balance(&beneficiary), U256::from(100u8));
     assert_eq!(vm.state.get_balance(&contract), U256::ZERO);
-    assert_eq!(vm.state.get_code(&contract), vec![PUSH1, beneficiary[19], SELFDESTRUCT]);
-    assert_eq!(vm.state.get_storage(&contract, U256::from(1u8)), U256::from(42u8));
+    assert_eq!(
+        vm.state.get_code(&contract),
+        vec![PUSH1, beneficiary[19], SELFDESTRUCT]
+    );
+    assert_eq!(
+        vm.state.get_storage(&contract, U256::from(1u8)),
+        U256::from(42u8)
+    );
 }
 
 #[test]
@@ -55,7 +87,8 @@ fn same_transaction_selfdestruct_removes_created_account() {
     vm.context.address = contract;
     vm.state.set_balance(contract, U256::from(100u8));
     vm.state.set_code(contract, vec![PUSH1, 1, STOP]);
-    vm.state.set_storage(contract, U256::from(1u8), U256::from(7u8));
+    vm.state
+        .set_storage(contract, U256::from(1u8), U256::from(7u8));
     vm.created_in_transaction.insert(contract);
 
     assert_eq!(vm.run(), ExecutionResult::Halt);
@@ -98,7 +131,10 @@ fn create_then_call_selfdestruct_removes_account_in_same_transaction() {
 
     assert_eq!(vm.run(), ExecutionResult::Halt);
     assert_eq!(vm.stack.pop(), Ok(U256::ONE));
-    assert_eq!(vm.state.get_account(&created_address), AccountState::default());
+    assert_eq!(
+        vm.state.get_account(&created_address),
+        AccountState::default()
+    );
 }
 
 #[test]
@@ -111,8 +147,8 @@ fn selfdestruct_in_staticcall_returns_static_violation() {
 
     let mut vm = Evm::new_with_gas(
         &[
-            PUSH1, 0, PUSH1, 0, PUSH1, 0, PUSH1, 0, PUSH20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, STATICCALL,
+            PUSH1, 0, PUSH1, 0, PUSH1, 0, PUSH1, 0, PUSH20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, STATICCALL,
         ],
         50_000,
     );

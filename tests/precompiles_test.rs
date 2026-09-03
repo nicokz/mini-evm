@@ -47,6 +47,16 @@ fn test_ecrecover_invalid_signature_returns_zero_word() {
 }
 
 #[test]
+fn unsupported_precompile_addresses_are_rejected_explicitly() {
+    for number in 5..=10 {
+        assert_eq!(
+            execute_precompile(&address(number), &[], 1_000),
+            Err(VmError::InvalidPrecompile)
+        );
+    }
+}
+
+#[test]
 fn test_sha256_output_matches_digest() {
     let input = b"precompile";
     let (_, output) = execute_precompile(&address(2), input, 1_000).unwrap();

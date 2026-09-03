@@ -1,5 +1,6 @@
 use crate::fixture_types::StateTestCase;
 use k256::ecdsa::SigningKey;
+use mini_evm::gas::calc_data_fee;
 use mini_evm::state::{AccountState, StateFork};
 use mini_evm::vm::{Evm, ExecutionResult};
 use ruint::aliases::U256;
@@ -84,6 +85,22 @@ pub fn run_state_test_case(case: &StateTestCase, fork: &str) -> Result<[u8; 32],
     vm.env.timestamp = case.env.current_timestamp;
     vm.env.base_fee = case.env.current_base_fee.unwrap_or(U256::ZERO);
     vm.env.prevrandao = case.env.current_random.unwrap_or(U256::ZERO);
+    vm.env.blob_base_fee = case
+        .env
+        .current_excess_blob_gas
+        .map(calc_data_fee)
+        .unwrap_or(U256::ZERO);
+
+    if let Some(hashes) = &case.transaction.blob_versioned_hashes {
+        vm.context.blob_versioned_hashes = hashes
+            .iter()
+            .map(|hash| {
+                hash.as_slice()
+                    .try_into()
+                    .map_err(|_| RunnerError::InvalidFork("blob hash must be 32 bytes".into()))
+            })
+            .collect::<Result<_, _>>()?;
+    }
 
     for (address, account) in &case.pre {
         vm.balances.insert(*address, account.balance);
@@ -113,7 +130,7 @@ pub fn run_state_test_case(case: &StateTestCase, fork: &str) -> Result<[u8; 32],
 
     match vm.run() {
         ExecutionResult::Halt | ExecutionResult::Return(_) | ExecutionResult::Revert(_) => {
-            Ok(vm.compute_state_root())
+            Ok(vm.state.compute_state_root())
         }
         result => Err(RunnerError::Execution(result)),
     }

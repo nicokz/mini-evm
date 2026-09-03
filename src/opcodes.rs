@@ -19,6 +19,7 @@ pub const MSTORE8: u8 = 0x53;
 pub const JUMP: u8 = 0x56;
 pub const JUMPI: u8 = 0x57;
 pub const MSIZE: u8 = 0x59;
+pub const MCOPY: u8 = 0x5E;
 pub const JUMPDEST: u8 = 0x5b;
 pub const PUSH1: u8 = 0x60;
 pub const PUSH2: u8 = 0x61;
