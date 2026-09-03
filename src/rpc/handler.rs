@@ -2,7 +2,6 @@ use super::RpcState;
 use super::types::{CallRequest, JsonRpcError, decode_address, decode_u256};
 use crate::simulation::simulate_tx;
 use crate::tx::decoder::decode_raw_tx;
-use crate::vm::runner::apply_signed_transaction; // or crate::vm::runner depending on where runner.rs lives
 use ruint::aliases::U256;
 use serde_json::Value;
 
@@ -95,28 +94,150 @@ pub async fn handle_eth_send_raw_transaction(
         .as_array()
         .and_then(|values| values.first())
         .and_then(Value::as_str)
-        .ok_or_else(|| JsonRpcError::invalid_params("eth_sendRawTransaction requires a raw transaction"))?;
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params("eth_sendRawTransaction requires a raw transaction")
+        })?;
 
     let bytes = hex::decode(raw.strip_prefix("0x").unwrap_or(raw))
         .map_err(|_| JsonRpcError::invalid_params("Invalid raw transaction hex"))?;
 
     let transaction = decode_raw_tx(&bytes).map_err(|e| {
-        JsonRpcError::custom(-32000, format!("Invalid signature or transaction encoding: {e:?}"))
+        JsonRpcError::custom(
+            -32000,
+            format!("Invalid signature or transaction encoding: {e:?}"),
+        )
     })?;
 
-    let mut state_guard = state.state.write().await;
-    let receipt = apply_signed_transaction(&mut state_guard, &transaction).map_err(|error| {
-        JsonRpcError::custom(-32000, format!("transaction execution failed: {error:?}"))
-    })?;
-    drop(state_guard);
-
+    let sender = *transaction.sender.as_fixed_bytes();
+    let current_nonce = state.state.read().await.get_account(&sender).nonce;
+    if transaction.nonce < current_nonce {
+        return Err(JsonRpcError::custom(
+            -32000,
+            "nonce is lower than account nonce",
+        ));
+    }
     state
-        .receipts
-        .write()
-        .await
-        .insert(transaction.hash, receipt);
+        .tx_pool
+        .insert(sender, transaction.clone(), bytes)
+        .map_err(|error| JsonRpcError::custom(-32000, error))?;
+    if state.is_auto_mine() {
+        state
+            .mine_block()
+            .await
+            .map_err(|error| JsonRpcError::custom(-32000, error))?;
+    }
 
     Ok(format!("0x{}", hex::encode(transaction.hash)))
+}
+
+pub async fn handle_txpool_status(state: &RpcState) -> Result<Value, JsonRpcError> {
+    let pending = state
+        .tx_pool
+        .len()
+        .map_err(|error| JsonRpcError::custom(-32000, error))?;
+    Ok(serde_json::json!({
+        "pending": format!("0x{pending:x}"),
+        "queued": "0x0"
+    }))
+}
+
+pub async fn handle_pending_transactions(state: &RpcState) -> Result<Value, JsonRpcError> {
+    let transactions = state
+        .tx_pool
+        .pending()
+        .map_err(|error| JsonRpcError::custom(-32000, error))?;
+    Ok(Value::Array(
+        transactions
+            .into_iter()
+            .map(|transaction| Value::String(format!("0x{}", hex::encode(transaction.tx.hash))))
+            .collect(),
+    ))
+}
+
+pub async fn handle_eth_block_number(state: &RpcState) -> String {
+    format!("0x{:x}", *state.block_number.read().await)
+}
+
+pub async fn handle_evm_mine(state: &RpcState) -> Result<String, JsonRpcError> {
+    let hash = state
+        .mine_block()
+        .await
+        .map_err(|error| JsonRpcError::custom(-32000, error))?;
+    Ok(format!("0x{}", hex::encode(hash)))
+}
+
+pub async fn handle_eth_get_block_by_number(
+    state: &RpcState,
+    params: &Value,
+) -> Result<Value, JsonRpcError> {
+    let values = params
+        .as_array()
+        .ok_or_else(|| invalid_params("eth_getBlockByNumber params must be an array"))?;
+    if values.first().and_then(Value::as_str).is_none() {
+        return Err(invalid_params("eth_getBlockByNumber requires a block tag"));
+    }
+
+    let block_number = *state.block_number.read().await;
+    let state_root = *state.state_root.read().await;
+    Ok(serde_json::json!({
+        "number": format!("0x{block_number:x}"),
+        "hash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": "0x0000000000000000",
+        "sha3Uncles": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "logsBloom": format!("0x{}", "00".repeat(256)),
+        "transactionsRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "stateRoot": format!("0x{}", hex::encode(state_root)),
+        "receiptsRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "miner": "0x0000000000000000000000000000000000000000",
+        "difficulty": "0x0",
+        "totalDifficulty": "0x0",
+        "extraData": "0x",
+        "size": "0x0",
+        "gasLimit": "0x1c9c380",
+        "gasUsed": "0x0",
+        "timestamp": "0x60000000",
+        "transactions": [],
+        "uncles": []
+    }))
+}
+
+pub async fn handle_eth_get_transaction_receipt(
+    state: &RpcState,
+    params: &Value,
+) -> Result<Option<Value>, JsonRpcError> {
+    let values = params
+        .as_array()
+        .ok_or_else(|| invalid_params("eth_getTransactionReceipt params must be an array"))?;
+    let hash = values
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_params("eth_getTransactionReceipt requires a transaction hash"))?;
+    let bytes = hex::decode(hash.strip_prefix("0x").unwrap_or(hash))
+        .map_err(|_| invalid_params("invalid transaction hash"))?;
+    let hash: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| invalid_params("transaction hash must be 32 bytes"))?;
+    let receipt = state.receipts.read().await.get(&hash).cloned();
+
+    Ok(receipt.map(|receipt| {
+        serde_json::json!({
+            "transactionHash": format!("0x{}", hex::encode(hash)),
+            "transactionIndex": "0x0",
+            "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "blockNumber": "0x1",
+            "from": "0x0000000000000000000000000000000000000000",
+            "to": Value::Null,
+            "cumulativeGasUsed": format!("0x{:x}", receipt.gas_used),
+            "gasUsed": format!("0x{:x}", receipt.gas_used),
+            "contractAddress": Value::Null,
+            "logs": [],
+            "logsBloom": format!("0x{}", "00".repeat(256)),
+            "status": format!("0x{:x}", receipt.status),
+            "effectiveGasPrice": "0x1",
+            "type": "0x0"
+        })
+    }))
 }
 
 fn parse_call_request(params: Value) -> Result<CallRequest, JsonRpcError> {

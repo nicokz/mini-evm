@@ -2,7 +2,7 @@
 
 use primitive_types::{H160, H256, U256};
 use rlp::{Rlp, RlpStream};
-use secp256k1::{ecdsa::RecoverableSignature, ecdsa::RecoveryId, Message, Secp256k1};
+use secp256k1::{Message, Secp256k1, ecdsa::RecoverableSignature, ecdsa::RecoveryId};
 use tiny_keccak::{Hasher, Keccak};
 //pub use crate::tx::decoder::{decode_raw_tx, SignedTransaction, TxDecodeError, TxType};
 pub type Address = H160;
@@ -71,7 +71,7 @@ fn decode_eip1559(payload: &[u8], tx_hash: H256) -> Result<SignedTransaction, Tx
     let max_priority_fee_per_gas: U256 = rlp.val_at(2)?;
     let max_fee_per_gas: U256 = rlp.val_at(3)?;
     let gas_limit: u64 = rlp.val_at(4)?;
-    
+
     let to_bytes: Vec<u8> = rlp.val_at(5)?;
     let to = if to_bytes.is_empty() {
         None
@@ -95,7 +95,7 @@ fn decode_eip1559(payload: &[u8], tx_hash: H256) -> Result<SignedTransaction, Tx
     stream.append(&max_fee_per_gas);
     stream.append(&gas_limit);
     if let Some(ref addr) = to {
-        stream.append(&addr.as_bytes());
+        stream.append(&addr.as_bytes().to_vec());
     } else {
         stream.append(&"");
     }
@@ -133,7 +133,7 @@ fn decode_legacy(raw_bytes: &[u8], tx_hash: H256) -> Result<SignedTransaction, T
     let nonce: u64 = rlp.val_at(0)?;
     let gas_price: U256 = rlp.val_at(1)?;
     let gas_limit: u64 = rlp.val_at(2)?;
-    
+
     let to_bytes: Vec<u8> = rlp.val_at(3)?;
     let to = if to_bytes.is_empty() {
         None
@@ -165,18 +165,26 @@ fn decode_legacy(raw_bytes: &[u8], tx_hash: H256) -> Result<SignedTransaction, T
         stream.append(&nonce);
         stream.append(&gas_price);
         stream.append(&gas_limit);
-        if let Some(ref addr) = to { stream.append(&addr.as_bytes()); } else { stream.append(&""); }
+        if let Some(ref addr) = to {
+            stream.append(&addr.as_bytes().to_vec());
+        } else {
+            stream.append(&"");
+        }
         stream.append(&value);
         stream.append(&data);
         stream.append(&cid);
-        stream.append(&0u8);
-        stream.append(&0u8);
+        stream.append_empty_data();
+        stream.append_empty_data();
     } else {
         stream.begin_list(6);
         stream.append(&nonce);
         stream.append(&gas_price);
         stream.append(&gas_limit);
-        if let Some(ref addr) = to { stream.append(&addr.as_bytes()); } else { stream.append(&""); }
+        if let Some(ref addr) = to {
+            stream.append(&addr.as_bytes());
+        } else {
+            stream.append(&"");
+        }
         stream.append(&value);
         stream.append(&data);
     }
@@ -199,20 +207,28 @@ fn decode_legacy(raw_bytes: &[u8], tx_hash: H256) -> Result<SignedTransaction, T
     })
 }
 
-fn recover_sender(sighash: &[u8; 32], r: &[u8], s: &[u8], rec_id: u8) -> Result<Address, TxDecodeError> {
+fn recover_sender(
+    sighash: &[u8; 32],
+    r: &[u8],
+    s: &[u8],
+    rec_id: u8,
+) -> Result<Address, TxDecodeError> {
     let mut sig_bytes = [0u8; 64];
     let r_padded = pad_zero_left(r, 32);
     let s_padded = pad_zero_left(s, 32);
     sig_bytes[..32].copy_from_slice(&r_padded);
     sig_bytes[32..].copy_from_slice(&s_padded);
 
-    let recovery_id = RecoveryId::from_i32(rec_id as i32).map_err(|_| TxDecodeError::InvalidSignature)?;
+    let recovery_id =
+        RecoveryId::from_i32(rec_id as i32).map_err(|_| TxDecodeError::InvalidSignature)?;
     let sig = RecoverableSignature::from_compact(&sig_bytes, recovery_id)
         .map_err(|_| TxDecodeError::InvalidSignature)?;
 
     let msg = Message::from_digest(*sighash);
     let secp = Secp256k1::verification_only();
-    let pub_key = secp.recover_ecdsa(&msg, &sig).map_err(|_| TxDecodeError::RecoveryFailed)?;
+    let pub_key = secp
+        .recover_ecdsa(&msg, &sig)
+        .map_err(|_| TxDecodeError::RecoveryFailed)?;
 
     // Ethereum address = last 20 bytes of Keccak256(uncompressed_pubkey[1..])
     let uncompressed = pub_key.serialize_uncompressed();

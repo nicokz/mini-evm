@@ -2,7 +2,70 @@ use crate::env::Address;
 use ruint::aliases::U256;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::RwLock;
 
+use crate::state::StateFork;
+use crate::vm::runner::TxExecutionReceipt;
+use crate::{mempool::TxPool, vm::runner::apply_signed_transaction};
+
+#[derive(Clone)]
+pub struct RpcState {
+    pub state: Arc<RwLock<StateFork>>,
+    pub receipts: Arc<RwLock<HashMap<[u8; 32], TxExecutionReceipt>>>,
+    pub tx_pool: Arc<TxPool>,
+    pub block_number: Arc<RwLock<u64>>,
+    pub state_root: Arc<RwLock<[u8; 32]>>,
+    pub auto_mine: Arc<AtomicBool>,
+}
+
+impl RpcState {
+    pub fn new(state: StateFork) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(state)),
+            receipts: Arc::new(RwLock::new(HashMap::new())),
+            tx_pool: Arc::new(TxPool::new()),
+            block_number: Arc::new(RwLock::new(0)),
+            state_root: Arc::new(RwLock::new([0; 32])),
+            auto_mine: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn set_auto_mine(&self, enabled: bool) {
+        self.auto_mine.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn is_auto_mine(&self) -> bool {
+        self.auto_mine.load(Ordering::Relaxed)
+    }
+
+    pub async fn mine_block(&self) -> Result<[u8; 32], String> {
+        let senders = self.tx_pool.senders()?;
+        let mut state = self.state.write().await;
+        let mut current_nonces = HashMap::new();
+        for sender in senders {
+            current_nonces.insert(sender, state.get_account(&sender).nonce);
+        }
+        let pending = self.tx_pool.pop_executable(&current_nonces, 30_000_000)?;
+        let mut receipts = self.receipts.write().await;
+        for transaction in pending {
+            let receipt = apply_signed_transaction(&mut state, &transaction.tx)
+                .map_err(|error| format!("transaction execution failed: {error:?}"))?;
+            receipts.insert(transaction.tx.hash.into(), receipt);
+            state.clear_transient_storage();
+        }
+
+        let new_state_root = state.compute_state_root();
+        *self.state_root.write().await = new_state_root;
+        let mut block_number = self.block_number.write().await;
+        *block_number = block_number.saturating_add(1);
+        let mut block_hash = [0u8; 32];
+        block_hash[..8].copy_from_slice(&block_number.to_be_bytes());
+        Ok(block_hash)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
@@ -162,7 +225,11 @@ fn optional_hex(value: Option<&Value>) -> Option<String> {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
-    hex::decode(value.strip_prefix("0x").unwrap_or(value)).map_err(|error| error.to_string())
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    if value.len() % 2 == 1 {
+        return hex::decode(format!("0{value}")).map_err(|error| error.to_string());
+    }
+    hex::decode(value).map_err(|error| error.to_string())
 }
 
 pub fn decode_address(value: &str) -> Result<Address, String> {

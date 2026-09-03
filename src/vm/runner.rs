@@ -1,9 +1,11 @@
 // src/vm/runner.rs
 
-use primitive_types::{H256, U256};
+use crate::env::Address;
 use crate::state::StateFork;
 use crate::tx::decoder::SignedTransaction;
-use crate::vm::Vm;
+use crate::vm::{Evm, ExecutionResult};
+use primitive_types::H256;
+use ruint::aliases::U256;
 
 #[derive(Debug, Clone)]
 pub struct TxExecutionReceipt {
@@ -24,7 +26,8 @@ pub fn apply_signed_transaction(
     state: &mut StateFork,
     tx: &SignedTransaction,
 ) -> Result<TxExecutionReceipt, ExecutionError> {
-    let current_nonce = state.get_nonce(&tx.sender);
+    let sender: Address = *tx.sender.as_fixed_bytes();
+    let current_nonce = state.get_account(&sender).nonce;
     if current_nonce != tx.nonce {
         return Err(ExecutionError::NonceMismatch {
             expected: current_nonce,
@@ -32,39 +35,51 @@ pub fn apply_signed_transaction(
         });
     }
 
-    let max_gas_cost = U256::from(tx.gas_limit) * tx.max_fee_per_gas;
-    let total_upfront_cost = tx.value + max_gas_cost;
-    let sender_balance = state.get_balance(&tx.sender);
+    let mut value_bytes = [0u8; 32];
+    tx.value.to_big_endian(&mut value_bytes);
+    let value = U256::from_be_bytes(value_bytes);
+    let mut max_fee_bytes = [0u8; 32];
+    tx.max_fee_per_gas.to_big_endian(&mut max_fee_bytes);
+    let max_fee_per_gas = U256::from_be_bytes(max_fee_bytes);
+    let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
+    let total_upfront_cost = value + max_gas_cost;
+    let sender_balance = state.get_balance(&sender);
 
     if sender_balance < total_upfront_cost {
         return Err(ExecutionError::InsufficientBalance);
     }
 
     // Deduct maximum upfront gas cost & increment nonce
-    state.set_balance(&tx.sender, sender_balance - max_gas_cost);
-    state.set_nonce(&tx.sender, current_nonce + 1);
+    state.set_balance(sender, sender_balance - max_gas_cost);
+    state.set_nonce(sender, current_nonce + 1);
 
     // Execute state transition
-    let mut vm = Vm::new(state);
-    let vm_result = vm.execute_tx(
-        tx.sender,
-        tx.to,
-        tx.value,
-        &tx.data,
-        tx.gas_limit,
-    );
+    let target = tx.to.map(|address| *address.as_fixed_bytes());
+    let code = target
+        .map(|address| state.get_code(&address))
+        .unwrap_or_default();
+    let mut vm = Evm::new_with_gas(&code, tx.gas_limit);
+    vm.state = state.clone();
+    vm.context.caller = sender;
+    vm.context.address = target.unwrap_or([0; 20]);
+    vm.context.value = u128::try_from(value).unwrap_or(u128::MAX);
+    vm.context.calldata = tx.data.clone();
+    vm.storage_address = target.unwrap_or([0; 20]);
 
-    let (status, gas_used) = match vm_result {
-        Ok(res) if !res.reverted => (1u64, res.gas_used),
-        Ok(res) => (0u64, res.gas_used),
-        Err(_) => (0u64, tx.gas_limit), // Burn gas limit on internal error
+    let result = vm.run();
+    let (status, gas_used) = match result {
+        ExecutionResult::Halt | ExecutionResult::Return(_) => {
+            *state = vm.state;
+            (1u64, tx.gas_limit.saturating_sub(vm.gas_left))
+        }
+        _ => (0u64, tx.gas_limit.saturating_sub(vm.gas_left)),
     };
 
     // Refund unused gas
     let unused_gas = tx.gas_limit.saturating_sub(gas_used);
-    let refund_amount = U256::from(unused_gas) * tx.max_fee_per_gas;
-    let post_exec_balance = state.get_balance(&tx.sender);
-    state.set_balance(&tx.sender, post_exec_balance + refund_amount);
+    let refund_amount = U256::from(unused_gas) * max_fee_per_gas;
+    let post_exec_balance = state.get_balance(&sender);
+    state.set_balance(sender, post_exec_balance + refund_amount);
 
     Ok(TxExecutionReceipt {
         tx_hash: tx.hash,

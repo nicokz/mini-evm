@@ -4,6 +4,7 @@ pub mod disasm;
 pub mod env;
 pub mod gas;
 pub mod log;
+pub mod mempool;
 pub mod mpt;
 pub mod opcodes;
 pub mod precompiles;
@@ -13,6 +14,7 @@ pub mod simulation;
 pub mod stack;
 pub mod state;
 pub mod tracer;
+pub mod tx;
 pub mod vm;
 
 #[cfg(test)]

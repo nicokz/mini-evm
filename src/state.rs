@@ -1,4 +1,5 @@
 use crate::env::Address;
+use crate::mpt::{MerklePatriciaTrie, StateAccount};
 use ruint::aliases::U256;
 use std::collections::HashMap;
 
@@ -26,6 +27,42 @@ pub struct StateFork {
 }
 
 impl StateFork {
+    pub fn compute_state_root(&self) -> [u8; 32] {
+        let mut addresses = self
+            .base_state
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        addresses.extend(self.dirty_state.keys().copied());
+        let empty_code_hash = crate::crypto::keccak256(&[]);
+        let mut trie = MerklePatriciaTrie::new();
+
+        for address in addresses {
+            let account = self.get_account(&address);
+            let mut storage_trie = MerklePatriciaTrie::new();
+            for (slot, value) in account.storage {
+                let key = crate::crypto::keccak256(&slot.to_be_bytes::<32>());
+                let raw = value.to_be_bytes::<32>();
+                let first = raw.iter().position(|byte| *byte != 0).unwrap_or(32);
+                let encoded = raw[first..].to_vec();
+                storage_trie.insert(&key, encoded);
+            }
+            let state_account = StateAccount {
+                nonce: account.nonce,
+                balance: account.balance,
+                storage_root: storage_trie.root_hash(),
+                code_hash: if account.code.is_empty() {
+                    empty_code_hash
+                } else {
+                    crate::crypto::keccak256(&account.code)
+                },
+            };
+            let key = crate::crypto::keccak256(&address);
+            trie.insert(&key, state_account.rlp_encode());
+        }
+        trie.root_hash()
+    }
+
     pub fn snapshot(&mut self) -> usize {
         let snapshot_id = self.snapshots.len();
         self.snapshots.push(Snapshot {

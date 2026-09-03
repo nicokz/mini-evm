@@ -12,6 +12,9 @@ use crate::state::StateFork;
 use crate::tracer::{StepFrame, StepTracer};
 use ruint::aliases::U256;
 use std::collections::{HashMap, HashSet};
+
+#[path = "vm/runner.rs"]
+pub mod runner;
 use tiny_keccak::{Hasher, Keccak};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -81,6 +84,8 @@ fn build_gas_table() -> [u64; 256] {
     table[SHR as usize] = 3;
     table[SAR as usize] = 3;
     table[ADDRESS as usize] = 2;
+    table[BALANCE as usize] = 0;
+    table[SELFBALANCE as usize] = 5;
     table[CALLER as usize] = 2;
     table[CALLVALUE as usize] = 2;
     table[CALLDATALOAD as usize] = 3;
@@ -373,9 +378,14 @@ impl Evm {
         dispatch_table[CODECOPY as usize] = Self::op_codecopy;
 
         dispatch_table[ADDRESS as usize] = Self::op_address;
+        dispatch_table[BALANCE as usize] = Self::op_balance;
         dispatch_table[CALLER as usize] = Self::op_caller;
         dispatch_table[CALLVALUE as usize] = Self::op_callvalue;
         dispatch_table[CODESIZE as usize] = Self::op_codesize;
+        dispatch_table[EXTCODESIZE as usize] = Self::op_extcodesize;
+        dispatch_table[EXTCODECOPY as usize] = Self::op_extcodecopy;
+        dispatch_table[EXTCODEHASH as usize] = Self::op_extcodehash;
+        dispatch_table[SELFBALANCE as usize] = Self::op_selfbalance;
         dispatch_table[GASPRICE as usize] = Self::op_gasprice;
         dispatch_table[RETURNDATASIZE as usize] = Self::op_returndatasize;
         dispatch_table[RETURNDATACOPY as usize] = Self::op_returndatacopy;
@@ -1532,6 +1542,149 @@ impl Evm {
             |_| ExecutionResult::Error("Stack Overflow on CODESIZE"),
             |_| ExecutionResult::Halt,
         )
+    }
+
+    fn account_address(word: U256) -> Address {
+        let bytes = word.to_be_bytes::<32>();
+        let mut address = [0u8; 20];
+        address.copy_from_slice(&bytes[12..]);
+        address
+    }
+
+    fn charge_account_access(evm: &mut Evm, address: Address) -> ExecutionResult {
+        let cost = if evm.accessed_addresses.insert(address) {
+            2_600
+        } else {
+            100
+        };
+        if evm.gas_left < cost {
+            return ExecutionResult::OutOfGas;
+        }
+        evm.gas_left -= cost;
+        ExecutionResult::Halt
+    }
+
+    fn account_code(evm: &Evm, address: &Address) -> Vec<u8> {
+        evm.state.get_code(address)
+    }
+
+    fn op_balance(evm: &mut Evm) -> ExecutionResult {
+        let address = match evm.stack.pop() {
+            Ok(word) => Self::account_address(word),
+            Err(error) => return ExecutionResult::Error(error),
+        };
+        if let result @ ExecutionResult::OutOfGas = Self::charge_account_access(evm, address) {
+            return result;
+        }
+        evm.stack.push(evm.state.get_balance(&address)).map_or_else(
+            |_| ExecutionResult::Error("Stack Overflow on BALANCE"),
+            |_| ExecutionResult::Halt,
+        )
+    }
+
+    fn op_selfbalance(evm: &mut Evm) -> ExecutionResult {
+        let address = if evm.storage_address == [0; 20] {
+            evm.context.address
+        } else {
+            evm.storage_address
+        };
+        evm.stack.push(evm.state.get_balance(&address)).map_or_else(
+            |_| ExecutionResult::Error("Stack Overflow on SELFBALANCE"),
+            |_| ExecutionResult::Halt,
+        )
+    }
+
+    fn op_extcodesize(evm: &mut Evm) -> ExecutionResult {
+        let address = match evm.stack.pop() {
+            Ok(word) => Self::account_address(word),
+            Err(error) => return ExecutionResult::Error(error),
+        };
+        if let result @ ExecutionResult::OutOfGas = Self::charge_account_access(evm, address) {
+            return result;
+        }
+        evm.stack
+            .push(U256::from(Self::account_code(evm, &address).len()))
+            .map_or_else(
+                |_| ExecutionResult::Error("Stack Overflow on EXTCODESIZE"),
+                |_| ExecutionResult::Halt,
+            )
+    }
+
+    fn op_extcodehash(evm: &mut Evm) -> ExecutionResult {
+        let address = match evm.stack.pop() {
+            Ok(word) => Self::account_address(word),
+            Err(error) => return ExecutionResult::Error(error),
+        };
+        if let result @ ExecutionResult::OutOfGas = Self::charge_account_access(evm, address) {
+            return result;
+        }
+        let code = Self::account_code(evm, &address);
+        let hash = if code.is_empty() {
+            [0u8; 32]
+        } else {
+            crate::crypto::keccak256(&code)
+        };
+        evm.stack.push(U256::from_be_bytes(hash)).map_or_else(
+            |_| ExecutionResult::Error("Stack Overflow on EXTCODEHASH"),
+            |_| ExecutionResult::Halt,
+        )
+    }
+
+    fn op_extcodecopy(evm: &mut Evm) -> ExecutionResult {
+        let address = match evm.stack.pop() {
+            Ok(word) => Self::account_address(word),
+            Err(error) => return ExecutionResult::Error(error),
+        };
+        let (dest_word, offset_word, size_word) =
+            match (evm.stack.pop(), evm.stack.pop(), evm.stack.pop()) {
+                (Ok(dest), Ok(offset), Ok(size)) => (dest, offset, size),
+                _ => return ExecutionResult::Error("Stack Underflow on EXTCODECOPY"),
+            };
+        let dest = match usize::try_from(dest_word) {
+            Ok(value) => value,
+            Err(_) => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        let offset = match usize::try_from(offset_word) {
+            Ok(value) => value,
+            Err(_) => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        let size = match usize::try_from(size_word) {
+            Ok(value) => value,
+            Err(_) => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        let copy_cost = match calc_copy_gas(size_word) {
+            Ok(cost) => cost,
+            Err(_) => return ExecutionResult::OutOfGas,
+        };
+        let access_cost: u64 = if evm.accessed_addresses.insert(address) {
+            2_600
+        } else {
+            100
+        };
+        let memory_cost = match evm.memory_expansion_cost(&[(dest, size)]) {
+            Ok(cost) => cost,
+            Err(error) => return ExecutionResult::VmError(error),
+        };
+        let total_cost = match access_cost
+            .checked_add(copy_cost)
+            .and_then(|cost| cost.checked_add(memory_cost))
+        {
+            Some(cost) => cost,
+            None => return ExecutionResult::VmError(VmError::Overflow),
+        };
+        if evm.gas_left < total_cost {
+            return ExecutionResult::OutOfGas;
+        }
+        evm.gas_left -= total_cost;
+        if let Err(error) = evm.expand_memory_without_charge(&[(dest, size)]) {
+            return ExecutionResult::VmError(error);
+        }
+        let code = Self::account_code(evm, &address);
+        for index in 0..size {
+            let source = offset.saturating_add(index);
+            evm.memory[dest + index] = code.get(source).copied().unwrap_or(0);
+        }
+        ExecutionResult::Halt
     }
 
     fn op_gasprice(evm: &mut Evm) -> ExecutionResult {
