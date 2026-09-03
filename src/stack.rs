@@ -1,18 +1,20 @@
+use ruint::aliases::U256;
+
 pub struct Stack<const CAP: usize = 1024> {
-    data: [u64; CAP],
+    data: [U256; CAP],
     sp: usize,
 }
 
 impl<const CAP: usize> Stack<CAP> {
     pub const fn new() -> Self {
         Self {
-            data: [0; CAP],
+            data: [U256::ZERO; CAP],
             sp: 0,
         }
     }
 
     #[inline(always)]
-    pub fn push(&mut self, val: u64) -> Result<(), &'static str> {
+    pub fn push(&mut self, val: U256) -> Result<(), &'static str> {
         if self.sp >= CAP {
             return Err("Stack Overflow");
         }
@@ -22,7 +24,7 @@ impl<const CAP: usize> Stack<CAP> {
     }
 
     #[inline(always)]
-    pub fn pop(&mut self) -> Result<u64, &'static str> {
+    pub fn pop(&mut self) -> Result<U256, &'static str> {
         if self.sp == 0 {
             return Err("Stack Underflow");
         }
@@ -31,7 +33,7 @@ impl<const CAP: usize> Stack<CAP> {
     }
 
     #[inline(always)]
-    pub fn peek(&self, depth: usize) -> Result<u64, &'static str> {
+    pub fn peek(&self, depth: usize) -> Result<U256, &'static str> {
         if depth == 0 || self.sp < depth {
             return Err("Stack Underflow on Peek");
         }
@@ -48,5 +50,14 @@ impl<const CAP: usize> Stack<CAP> {
         self.data.swap(top, target);
         Ok(())
     }
-    
+
+    pub fn values(&self) -> Vec<U256> {
+        self.data[..self.sp].to_vec()
+    }
+}
+
+impl<const CAP: usize> Default for Stack<CAP> {
+    fn default() -> Self {
+        Self::new()
+    }
 }

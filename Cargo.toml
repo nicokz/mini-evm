@@ -4,3 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ruint = "1"
+tiny-keccak = { version = "2", features = ["keccak"] }
+k256 = "0.13"
+sha2 = "0.10"
+ripemd = "0.1"
+clap = { version = "4.4", features = ["derive"] }
+colored = "2.0"
+hex = "0.4"
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tower-http = { version = "0.6", features = ["trace"] }
+tower = { version = "0.5", features = ["util"] }
+flate2 = "1.0"
+walkdir = "2.4"
+rlp = "0.5"
+secp256k1 = { version = "0.28", features = ["recovery", "alloc"] }
+primitive-types = { version = "0.12", features = ["rlp"] }
